@@ -10,11 +10,12 @@ SHELL := /bin/bash
 PROJECT_DIR := $(shell dirname $(realpath $(lastword $(MAKEFILE_LIST))))
 PROJECT_NAME = obfuscator
 PROJECT_SRC = obfuscator
+TEST_DIR = tests
 PYTHON_VERSION = 3.9.4
 VENV_NAME = zama_obfuscator
 PYENV_INSTRUCTIONS=https://github.com/pyenv/pyenv#installation
 PYENV_VIRT_INSTRUCTIONS=https://github.com/pyenv/pyenv-virtualenv#pyenv-virtualenv
-
+PYCPARSER_RELEASE=release_v2.20
 #################################################################################
 # COMMANDS                                                                      #
 #################################################################################
@@ -34,8 +35,36 @@ require_pyenv:
 	  echo -e "\033[0;32m ✔️  pyenv-virtualenv installed\033[0m";\
 	fi
 
-## Setup a dev environment for local development.
-init: require_pyenv  
+require_tools:
+	@if ! [ -x "$$(command -v curl)" ]; then\
+	  echo -e '\n\033[0;31m ❌ curl is not installed.  Please install it.\n\033[0m';\
+	  exit 1;\
+	else\
+	  echo -e "\033[0;32m ✔️  curl installed\033[0m";\
+	fi
+	@if ! [ -x "$$(command -v unzip)" ]; then\
+	  echo -e '\n\033[0;31m ❌ unzip is not installed.  Please install it.\n\033[0m';\
+	  exit 1;\
+	else\
+	  echo -e "\033[0;32m ✔️  unzip installed\033[0m";\
+	fi		
+	@if ! [ -x "$$(command -v sed)" ]; then\
+	  echo -e '\n\033[0;31m ❌ sed is not installed.  Please install it.\n\033[0m';\
+	  exit 1;\
+	else\
+	  echo -e "\033[0;32m ✔️  sed installed\033[0m";\
+	fi		
+
+require_poetry:
+	@if ! [ -x "$$(command -v poetry)" ]; then\
+	  echo -e '\n\033[0;31m ❌ poetry is not installed.  Please install it: https://python-poetry.org/docs/#installation.\n\033[0m';\
+	  exit 1;\
+	else\
+	  echo -e "\033[0;32m ✔️  poetry installed\033[0m";\
+	fi
+
+## Setup a Python environment for local development.
+init: require_pyenv require_tools
 	@pyenv install $(PYTHON_VERSION) -s
 	@echo -e "\033[0;32m ✔️  🐍 $(PYTHON_VERSION) installed \033[0m"
 	@if ! [ -d "$$(pyenv root)/versions/$(VENV_NAME)" ]; then\
@@ -55,29 +84,79 @@ init: require_pyenv
 ## Install Python Dependencies
 requirements: init
 	python -m pip install -r requirements.txt
+	curl -SL https://github.com/eliben/pycparser/archive/refs/tags/${PYCPARSER_RELEASE}.zip -o pycparser-${PYCPARSER_RELEASE}.zip
+	unzip -o pycparser-${PYCPARSER_RELEASE}.zip
+	cp -R pycparser-${PYCPARSER_RELEASE}/utils/fake_libc_include $(PROJECT_SRC)/data/
+	rm pycparser-${PYCPARSER_RELEASE}.zip
+	rm -rf pycparser-${PYCPARSER_RELEASE}
 
 ## Install development dependencies
-dev:
+dev: requirements
 	python -m pip install -r requirements-dev.txt
-
+	curl -SL https://github.com/google/styleguide/raw/gh-pages/pylintrc -o .pylintrc
+	sed -i 's/indent-string='\''  '\''/indent-string='\''    '\''/g' .pylintrc
+	sed -i 's/max-line-length=80/max-line-length=88/g' .pylintrc
+	
 ## Shortcut for autoformat and lint - Requires to have run make dev
 alint: autoformat lint
 
 ## Autoformat  using black and isort - Requires to have run make dev
 autoformat:
-	black $(PROJECT_SRC) notebooks
-	isort --atomic $(PROJECT_SRC)
+	autoflake --in-place --remove-unused-variables --remove-all-unused-imports --expand-star-imports --recursive $(PROJECT_SRC) $(TEST_DIR)
+	black $(PROJECT_SRC) $(TEST_DIR) conftest.py
+	isort --atomic $(PROJECT_SRC) $(TEST_DIR)
 
 ## Lint pylint and bandit - Requires to have run make dev
 lint:
-	python -m pylint $(PROJECT_SRC)
-	bandit -r $(PROJECT_SRC)
+	python -m pylint --rcfile=.pylintrc --exit-zero $(PROJECT_SRC)
 
 ## Delete all compiled Python files
 clean:
 	find . -type f -name "*.py[co]" -delete
 	find . -type d -name "__pycache__" -delete
 	find . -type d -name "*.egg-info" -delete
+	find . -name '.pytest_cache' -type d | xargs rm -rf
+	find . -name '.cffi_build' -type d | xargs rm -rf
+	find . -name '.coverage' -delete
+	find . -name 'lextab.py' -delete
+	find . -name 'yacctab.py' -delete
+
+
+## Run tests - Requires to have run make dev
+test:
+	pytest --verbose
+
+## Run test coverage - Requires to have run make dev
+cov:
+	coverage run
+	coverage report
+
+## Generate typer application documentation - Requires to have run make dev
+cli_docs: 
+	typer obfuscator/cli.py utils docs --name bmaingret-obfuscator --output CLI_DOCS.md   
+
+## Build Python wheel and sdist using Poetry
+build: alint test require_poetry
+	find . -name '*.whl' -delete
+	find . -name '*.tar.gz' -delete	
+	poetry update
+	poetry build
+	poetry export -f requirements.txt --output requirements.txt --without-hashes
+	poetry export --dev -f requirements.txt --output requirements-dev.txt --without-hashes
+
+# Build pdf from REPORT.md using Pandoc
+report:
+	@if ! [ -x "$$(command -v pandoc)" ]; then\
+	  echo -e '\n\033[0;31m ❌ pandoc is not installed.  Please install it. (apt install texlive texlive-latex-extra pandoc ?)\n\033[0m';\
+	  exit 1;\
+	else\
+	  echo -e "\033[0;32m ✔️  pandoc installed\033[0m";\
+	fi		
+	pandoc REPORT.md -s -o zama_bmaingret_obfuscator_report.pdf
+
+## Zip the content of the repository
+zip: build clean cli_docs report
+	cd .. && zip -FSr bmaingret_obfuscator.zip obfuscator  -x */\bmaingret_obfuscator.zip -x .vscode/\* -x .git/\*       
 
 #################################################################################
 # PROJECT RULES                                                                 #
